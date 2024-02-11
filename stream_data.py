@@ -2,11 +2,39 @@ from pymavlink import mavutil
 import datetime
 import json
 import os
+import numpy as np
+import pymap3d as pm
 import time
 
 # https://github.com/ArduPilot/pymavlink/blob/master/tools/mavtelemetry_datarates.py
 # ESTIMATOR_STATUS -> pos_horiz_accuracy
+#### KINEMATIC MODEL FUNCTIONS ###################
 
+def predict_next_position(origin, current):
+    
+    x, y, z = geodesic_distances(current['lat'], current['lon'], current['alt'], origin[0], origin[1], origin[2])
+    
+    x = moving_average(x, 4)
+    y = moving_average(y, 4)
+    z = moving_average(z, 4)
+    # Since in the kinematic model dt is calculated which in our case is impossible since we do not know the timestamp of the incoming message
+    # I will be assuming a dt of 0.333 since that seems to be an average
+    dt = 0.333
+    x_pred = x + current['vx'] * dt
+    y_pred = y + current['yx'] * dt
+    z_pred = z + current['zx'] * dt
+    # Finally send this to gimbel
+    #TODO : Send data to gimbel
+
+def geodesic_distances(lat1, lon1, alt1, lat2, lon2, alt2):
+    # In mavlink, east is y, north is x, down is z (z flipped upwards in preprocessing)
+    y, x, z = pm.geodetic2enu(lat1, lon1, alt1, lat2, lon2, alt2)
+    return x, y, z
+
+def moving_average(x, n=3):
+    return np.convolve(x, np.ones(n), 'same') / n
+
+#####################################################
 def connect(connection_string, baud=57600):
     # Connect to the vehicle
     mav = mavutil.mavlink_connection(
@@ -31,10 +59,21 @@ def record_data(mav):
     messages = []
     try:
         i = 0
+        global_pos_counter = 0
         start_time = time.time()
         while True:
             # Wait for a new message
             msg = mav.recv_match(blocking=True).to_dict()
+            if msg['mavpackettype'] == 'GLOBAL_POSITION_INT':
+
+                if global_pos_counter == 0:
+                    #Origin is same as origin df in kinematic model repo. It is used to calculate x,y,z based on lat,lon,alt
+                    origin = [msg['lat'], msg['lon'], msg['alt']]
+                    global_pos_counter += 1
+                    #Don't predict just shoot for origin
+                else:
+                    predict_next_position(origin, msg)
+            # Probably the prediction would go here
             messages.append(msg)
             unique_mavpackettypes.add(msg.get('mavpackettype'))
             i += 1
